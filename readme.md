@@ -1,8 +1,8 @@
 # Shotshot
 
-A lightweight screenshot tool for macOS, written primarily in C.
+A lightweight screenshot tool for macOS, written in Swift.
 
-The goal is maximum code sharing for future Windows and Linux ports.
+Built with a pure command-line workflow (no Xcode project).
 
 ## Current Status
 
@@ -38,18 +38,16 @@ The `install` and `debug` targets place a properly signed copy in `/Applications
 
 ## Architecture
 
-- **Core**: Single C file (`core/capture.c`) using a fixed-size global arena allocator
-- **PNG**: Vendored `stb_image_write.h`
-- **Platform layer**: Thin Objective-C shell (mac/)
-- **Build system**: `build.sh` only (no Xcode, no Makefiles)
-- **Clipboard**: Approach A — platform copies bytes out, core immediately zeros the arena
+- **Capture**: Pure Swift (`Sources/Capture.swift`) using CoreGraphics + ImageIO for PNG encoding
+- **UI / Hotkeys / Selection**: Swift AppKit layer (all under `Sources/`)
+- **Build system**: `build.sh` only (no Xcode, no SPM, no Makefiles) — uses `swiftc` directly
+- **Security**: Raw pixel buffers are explicitly zeroed immediately after PNG encoding
 
-## Design Constraints
+## Design Notes
 
-- As much portable C as possible
-- No malloc/free in the core (arena only)
-- Single `.c` file for the capture logic
-- Simple command-line build
+- The previous C core + stb_image_write was removed in favor of a full Swift implementation.
+- The sophisticated multi-monitor rectangular selection logic (per-display capture with largest-intersection heuristic, CGEventTap-driven cross-screen dragging, precise hole-punch overlay drawing) has been preserved.
+- The project still builds with a single shell script and produces a properly signed `.app` bundle.
 
 ## Permissions
 
@@ -62,7 +60,8 @@ The app will guide you to the correct System Settings panes on first run.
 
 ## Future
 
-The long-term plan is to keep the C core as large as possible so that Windows and Linux ports can reuse the capture, encoding, and clipboard logic with minimal changes.
+- Annotation tools (the original goal)
+- Possible future Windows/Linux ports (the previous C core made this easier; a Swift rewrite means those would need separate implementations or a new cross-platform layer)
 
 ---
 

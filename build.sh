@@ -8,41 +8,37 @@ CONTENTS="$APP_BUNDLE/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
-SRC_CORE="core/capture.c"
-SRC_MAC=(mac/*.m)
+SRC_DIR="Sources"
+RES_DIR="Resources"
 
-FRAMEWORKS=(-framework AppKit -framework CoreGraphics -framework IOKit)
+FRAMEWORKS=(-framework AppKit -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -framework IOKit)
 
-WARNINGS=(-Wall -Wextra -Wpedantic -Werror=return-type)
+# Deployment target — adjust if you need to support older macOS
+DEPLOYMENT_TARGET="14.0"
 
-INCLUDES=(-I. -Ivendor)
+WARNINGS=(-Xfrontend -warn-concurrency -Xfrontend -enable-actor-data-race-checks)
 
 case "${1:-build}" in
   build|"")
-    echo "Building $APP_NAME..."
+    echo "Building $APP_NAME (Swift)..."
 
     rm -rf "$APP_BUNDLE"
     mkdir -p "$MACOS" "$RESOURCES"
 
-    # Compile C + Objective-C together
-    clang \
-      "${WARNINGS[@]}" \
-      -O2 \
-      -fobjc-arc \
-      -Wno-error=deprecated-declarations \
-      -Wno-error=unguarded-availability \
-      -Wno-error=unguarded-availability-new \
-      -Wno-error=deprecated \
-      "${INCLUDES[@]}" \
+    # Compile all Swift sources into the executable
+    # We use swiftc directly (no Xcode, no SPM) to match the original project's philosophy.
+    swiftc \
+      -emit-executable \
+      -o "$MACOS/$APP_NAME" \
+      -target "arm64-apple-macos$DEPLOYMENT_TARGET" \
+      -O \
       "${FRAMEWORKS[@]}" \
-      "$SRC_CORE" \
-      "${SRC_MAC[@]}" \
-      -o "$MACOS/$APP_NAME"
+      $SRC_DIR/*.swift
 
     # Bundle resources
-    cp resources/Info.plist "$CONTENTS/"
+    cp "$RES_DIR/Info.plist" "$CONTENTS/"
 
-    # Ad-hoc sign
+    # Ad-hoc sign (important for TCC / permissions)
     codesign --deep --force --sign - "$APP_BUNDLE"
 
     echo "Built $APP_BUNDLE"
@@ -54,7 +50,22 @@ case "${1:-build}" in
     ;;
 
   debug)
-    "$0" build
+    # Build without optimizations and with debug info for easier debugging
+    echo "Building $APP_NAME (debug)..."
+
+    rm -rf "$APP_BUNDLE"
+    mkdir -p "$MACOS" "$RESOURCES"
+
+    swiftc \
+      -emit-executable \
+      -o "$MACOS/$APP_NAME" \
+      -target "arm64-apple-macos$DEPLOYMENT_TARGET" \
+      -g -Onone \
+      "${FRAMEWORKS[@]}" \
+      $SRC_DIR/*.swift
+
+    cp "$RES_DIR/Info.plist" "$CONTENTS/"
+    codesign --deep --force --sign - "$APP_BUNDLE"
 
     INSTALLED_APP="/Applications/$APP_NAME.app"
 
