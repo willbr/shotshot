@@ -1,0 +1,19 @@
+# Build output
+build/
+
+# Internal agent state
+.superpowers/
+
+# macOS junk
+.DS_Store
+._*
+
+# Editor files
+*~
+*.swp
+.idea/
+.vscode/
+*.sublime-*
+
+# Logs
+*.log
