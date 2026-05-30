@@ -23,6 +23,49 @@ private func CGDisplayCreateImageForRectWorkaround(
 
 enum Capture {
 
+    /// Shared implementation for capturing a desktop rect as CGImage.
+    /// Tries per-display first for best multi-monitor results, then falls back to window list.
+    private static func cgImage(for rect: CGRect) -> CGImage? {
+        var cgImage: CGImage?
+
+        var displays = [CGDirectDisplayID](repeating: 0, count: 8)
+        var displayCount: UInt32 = 0
+        CGGetDisplaysWithRect(rect, 8, &displays, &displayCount)
+
+        if displayCount > 0 {
+            var bestDisplay: CGDirectDisplayID = displays[0]
+            var bestArea: CGFloat = 0
+            var bestIntersection = CGRect.zero
+
+            for i in 0..<Int(displayCount) {
+                let dbounds = CGDisplayBounds(displays[i])
+                let inter = rect.intersection(dbounds)
+                let area = inter.width * inter.height
+                if area > bestArea {
+                    bestArea = area
+                    bestDisplay = displays[i]
+                    bestIntersection = inter
+                }
+            }
+
+            if bestArea > 0 {
+                cgImage = CGDisplayCreateImageForRectWorkaround(bestDisplay, bestIntersection)
+            }
+        }
+
+        if cgImage == nil {
+            cgImage = CGWindowListCreateImageWorkaround(
+                rect,
+                [.optionOnScreenOnly, .excludeDesktopElements],
+                kCGNullWindowID,
+                []
+            )
+        }
+
+        return cgImage
+    }
+
+
     /// Captures the full desktop (all on-screen content except desktop elements) as PNG data.
     static func fullscreen() -> Data? {
         #if DEBUG
@@ -58,48 +101,7 @@ enum Capture {
         #endif
 
         let captureRect = CGRect(x: x, y: y, width: width, height: height)
-        var cgImage: CGImage?
-
-        // Prefer per-display capture via the (silgen'd) symbol.
-        // This is the same strategy as the original C core.
-        // The symbol may not exist on very new SDKs at runtime, so we tolerate failure.
-        var displays = [CGDirectDisplayID](repeating: 0, count: 8)
-        var displayCount: UInt32 = 0
-        CGGetDisplaysWithRect(captureRect, 8, &displays, &displayCount)
-
-        if displayCount > 0 {
-            // Choose the display with the largest intersection area.
-            var bestDisplay: CGDirectDisplayID = displays[0]
-            var bestArea: CGFloat = 0
-            var bestIntersection = CGRect.zero
-
-            for i in 0..<Int(displayCount) {
-                let dbounds = CGDisplayBounds(displays[i])
-                let inter = captureRect.intersection(dbounds)
-                let area = inter.width * inter.height
-                if area > bestArea {
-                    bestArea = area
-                    bestDisplay = displays[i]
-                    bestIntersection = inter
-                }
-            }
-
-            if bestArea > 0 {
-                cgImage = CGDisplayCreateImageForRectWorkaround(bestDisplay, bestIntersection)
-            }
-        }
-
-        // Fallback to the global rect method (original behavior).
-        if cgImage == nil {
-            cgImage = CGWindowListCreateImageWorkaround(
-                captureRect,
-                [.optionOnScreenOnly, .excludeDesktopElements],
-                kCGNullWindowID,
-                []
-            )
-        }
-
-        guard let image = cgImage else {
+        guard let image = cgImage(for: captureRect) else {
             #if DEBUG
             print("[capture] rect capture returned nil")
             #endif
@@ -111,6 +113,22 @@ enum Capture {
         #endif
 
         return pngData(from: image)
+    }
+
+    /// Captures the given global rect of the desktop as a raw CGImage (no PNG encoding).
+    /// Used to freeze the desktop content inside the selection rectangle during drag.
+    static func image(for rect: CGRect) -> CGImage? {
+        return cgImage(for: rect)
+    }
+
+    /// Captures the full desktop as a raw CGImage (no PNG encoding).
+    static func fullscreenImage() -> CGImage? {
+        return CGWindowListCreateImageWorkaround(
+            CGRect.infinite,
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID,
+            []
+        )
     }
 
     // MARK: - Private helpers

@@ -14,6 +14,11 @@ final class SelectionView: NSView {
     /// Only one view (the one with largest overlap) shows the dimension label.
     var showsSizeLabel: Bool = false
 
+    /// Frozen screenshot of this screen's content, captured at the instant selection began (before overlays appeared).
+    /// When non-nil, this image is drawn inside the selection hole so the rect shows a frozen desktop
+    /// instead of whatever is currently happening live on screen.
+    var capturedImage: CGImage?
+
     // The view uses a flipped coordinate system (Y=0 at top of this screen's window,
     // Y increasing downward). This matches how global-to-local conversion + the
     // existing drawing math (NSMaxY for label "below", hole origin, etc.) expect
@@ -58,7 +63,18 @@ final class SelectionView: NSView {
         let bounds = self.bounds
 
         if !isSelecting || localSelectionRect.isEmpty {
-            // Full dim for this physical screen (either before drag starts, or selection is entirely on other monitors)
+            // Full dim for this physical screen (either before drag starts, or selection is entirely on other monitors).
+            // When we have a frozen capture, draw it first so the dimmed area shows the actual frozen desktop
+            // content instead of live pixels + solid black.
+            if let captured = capturedImage,
+               let ctx = NSGraphicsContext.current?.cgContext {
+                // Draw CGImage upright into a flipped NSView (isFlipped = true).
+                ctx.saveGState()
+                ctx.translateBy(x: 0, y: bounds.height)
+                ctx.scaleBy(x: 1, y: -1)
+                ctx.draw(captured, in: CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height))
+                ctx.restoreGState()
+            }
             dimColor.set()
             bounds.fill()
             return
@@ -77,29 +93,66 @@ final class SelectionView: NSView {
             sel.size.height = -sel.height
         }
 
-        // Snap the selection rect to pixel boundaries for the hole punch and border.
-        // Fractional coordinates from live mouse drag + NSRectFill (even with kCGBlendModeCopy)
-        // produce anti-aliased fringes exactly where the dim fill meets the transparent hole.
-        // This is the source of the 1px white vertical and horizontal lines at the inner edges.
+        // Snap the selection rect to pixel boundaries for crisp edges.
         var hole = NSRect.zero
         hole.origin.x = floor(sel.origin.x)
         hole.origin.y = floor(sel.origin.y)
         hole.size.width = ceil(NSMaxX(sel) - hole.origin.x)
         hole.size.height = ceil(NSMaxY(sel) - hole.origin.y)
 
-        // Fill the entire screen with dim, then punch a clean transparent hole for the
-        // selection area. The hole rect is integer-aligned so the dim/hole boundary has
-        // no subpixel fringe.
-        dimColor.set()
-        bounds.fill()
+        if let captured = capturedImage,
+           let ctx = NSGraphicsContext.current?.cgContext {
 
-        if let ctx = NSGraphicsContext.current?.cgContext {
+            // Draw the complete frozen desktop for this screen as the base layer.
+            // Everything (dimmed areas + selection) will now be based on the capture from startSelection time.
+            // Draw CGImage upright into a flipped NSView (isFlipped = true).
             ctx.saveGState()
-            ctx.setBlendMode(.copy)
-            ctx.setShouldAntialias(false)
-            NSColor.clear.set()
-            hole.fill()
+            ctx.translateBy(x: 0, y: bounds.height)
+            ctx.scaleBy(x: 1, y: -1)
+            ctx.draw(captured, in: CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height))
             ctx.restoreGState()
+
+            // Apply the dim over the entire screen (this tints the frozen image).
+            dimColor.set()
+            bounds.fill()
+
+            // Re-draw the undimmed frozen content only into the hole so the selection area appears at full brightness.
+            if hole.width > 0, hole.height > 0 {
+                let scale = window?.backingScaleFactor ?? 1.0
+
+                var src = CGRect.zero
+                src.origin.x = floor(hole.origin.x * scale)
+                src.origin.y = floor(hole.origin.y * scale)
+                src.size.width = ceil(NSMaxX(hole) * scale - src.origin.x)
+                src.size.height = ceil(NSMaxY(hole) * scale - src.origin.y)
+
+                let imgBounds = CGRect(x: 0, y: 0, width: CGFloat(captured.width), height: CGFloat(captured.height))
+                src = src.intersection(imgBounds)
+
+                if src.width > 0, src.height > 0,
+                   let subImage = captured.cropping(to: src) {
+                    // Draw upright into the flipped view.
+                    ctx.saveGState()
+                    ctx.translateBy(x: hole.origin.x, y: hole.origin.y + hole.height)
+                    ctx.scaleBy(x: 1, y: -1)
+                    ctx.draw(subImage, in: CGRect(x: 0, y: 0, width: hole.width, height: hole.height))
+                    ctx.restoreGState()
+                }
+            }
+        } else {
+            // Fallback when we have no frozen capture for this screen: solid dim + transparent hole
+            // (live desktop visible in the selection rect).
+            dimColor.set()
+            bounds.fill()
+
+            if let ctx = NSGraphicsContext.current?.cgContext {
+                ctx.saveGState()
+                ctx.setBlendMode(.copy)
+                ctx.setShouldAntialias(false)
+                NSColor.clear.set()
+                hole.fill()
+                ctx.restoreGState()
+            }
         }
 
         // White border drawn snapped for a crisp 1px line right at the dim/hole boundary.
@@ -189,13 +242,36 @@ final class RectSelectionController {
         #endif
         guard !screens.isEmpty else { return }
 
+        // Capture the desktop content for each screen *before* creating any overlay windows.
+        // This is what makes the image inside the selection rectangle frozen while the user drags.
+        // If we captured after orderFront, the dim overlays would appear in the frozen image.
+        // We capture into an array (parallel to `screens`) to avoid using CGRect as a dictionary key
+        // (Hashable conformance for CGRect is only guaranteed on macOS 15+).
+        var frozenImages: [CGImage?] = []
+        for screen in screens {
+            let frame = screen.frame
+            let img = Capture.image(for: frame)
+            frozenImages.append(img)
+            #if DEBUG
+            if let img = img {
+                print("[rect] froze \(img.width)x\(img.height) px for screen \(frame)")
+            } else {
+                print("[rect] WARNING: failed to capture frozen image for \(frame)")
+            }
+            #endif
+        }
+
         // One properly-sized, max-level window per physical screen.
         // This is the most reliable way on macOS to get dimming + drawing on *every* monitor,
         // especially with negative global origins or mixed-scale setups.
-        for screen in screens {
+        for (index, screen) in screens.enumerated() {
             let screenFrame = screen.frame
             let win = SelectionWindow(contentRect: screenFrame)
             win.setFrame(screenFrame, display: true)
+
+            if index < frozenImages.count, let frozen = frozenImages[index] {
+                win.selectionView.capturedImage = frozen
+            }
 
             windows.append(win)
             win.orderFront(nil)
@@ -296,6 +372,7 @@ final class RectSelectionController {
 
         for win in windows {
             win.orderOut(nil)
+            win.selectionView.capturedImage = nil // release large frozen images promptly
         }
         windows.removeAll()
 
