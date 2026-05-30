@@ -6,130 +6,19 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <dlfcn.h>
 
-// Forward declarations for stb allocator hooks (must come before the macros)
-static void *stb_arena_malloc(size_t size);
-static void  stb_arena_free(void *ptr);
-static void *stb_arena_realloc(void *ptr, size_t new_size);
-
-// Define stb allocators BEFORE including the implementation
-#define STBIW_MALLOC(sz)        stb_arena_malloc(sz)
-#define STBIW_FREE(p)           stb_arena_free(p)
-#define STBIW_REALLOC(p,newsz)  stb_arena_realloc(p, newsz)
-
+// Use stb_image_write with its default (real) malloc. The previous custom
+// bump allocator + realloc hacks were producing corrupt deflate streams
+// inside the generated PNGs (InvalidUncompressedBlockLength).
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "../vendor/stb/stb_image_write.h"
-
-#define ARENA_SIZE (256 * 1024 * 1024)   // 256 MiB — PNG encoding of large screens + stb's internal buffers (hash tables etc.) can be memory hungry
-
-static uint8_t arena[ARENA_SIZE];
-static size_t  arena_pos = 0;
-
-// Per-capture mark so we can zero *everything* allocated during a capture on free/error (Approach A)
-static size_t  arena_capture_mark = 0;
-
-// Track the most recent allocation (user pointer) for fast-path in-place reallocs
-static void  *last_alloc_ptr = NULL;
-static size_t last_alloc_size = 0;
 
 typedef struct {
     void *data;
     int   size;
 } PngBuffer;
-
-// --- Arena ---
-
-// Every allocation gets a small header so realloc always knows the true old size (fixes unsafe copies)
-#define ARENA_HEADER_SIZE sizeof(size_t)
-
-static void arena_zero_range(size_t start, size_t end);  // forward decl
-
-static void arena_begin_capture(void) {
-    arena_capture_mark = arena_pos;
-}
-
-// Zero everything allocated since begin_capture and fully reset the bump pointer + tracking state.
-static void arena_end_capture(void) {
-    if (arena_capture_mark < arena_pos) {
-        arena_zero_range(arena_capture_mark, arena_pos);
-    }
-    last_alloc_ptr = NULL;
-    last_alloc_size = 0;
-    arena_pos = 0;
-    arena_capture_mark = 0;
-}
-
-static void *arena_alloc(size_t size) {
-    size_t total = ARENA_HEADER_SIZE + size;
-    if (arena_pos + total > ARENA_SIZE) {
-        return NULL;
-    }
-
-    uint8_t *base = &arena[arena_pos];
-    *(size_t *)base = size;                 // header stores user size
-    void *user_ptr = base + ARENA_HEADER_SIZE;
-
-    arena_pos += total;
-
-    last_alloc_ptr = user_ptr;
-    last_alloc_size = size;
-    return user_ptr;
-}
-
-static size_t arena_get_alloc_size(const void *user_ptr) {
-    if (!user_ptr) return 0;
-    const uint8_t *base = (const uint8_t *)user_ptr - ARENA_HEADER_SIZE;
-    return *(const size_t *)base;
-}
-
-static void arena_zero_range(size_t start, size_t end) {
-    if (end > ARENA_SIZE) end = ARENA_SIZE;
-    if (start < end) {
-        memset(&arena[start], 0, end - start);
-    }
-}
-
-// --- stb allocator hook implementations ---
-
-static void *stb_arena_malloc(size_t size) {
-    return arena_alloc(size);
-}
-
-static void stb_arena_free(void *ptr) {
-    (void)ptr;
-}
-
-static void *stb_arena_realloc(void *ptr, size_t new_size) {
-    if (ptr == NULL) {
-        return arena_alloc(new_size);
-    }
-
-    size_t old_size = arena_get_alloc_size(ptr);
-
-    // Fast path: grow the most recent allocation in place when possible
-    if (ptr == last_alloc_ptr) {
-        if (old_size >= new_size) {
-            last_alloc_size = new_size;
-            return ptr;
-        }
-        size_t extra = new_size - old_size;
-        if (arena_pos + extra <= ARENA_SIZE) {
-            arena_pos += extra;
-            last_alloc_size = new_size;
-            return ptr;   // in-place growth
-        }
-        // fall through to allocate + copy
-    }
-
-    // Allocate new block and copy the real old contents (now safe because of headers)
-    void *new_ptr = arena_alloc(new_size);
-    if (new_ptr && ptr && old_size > 0) {
-        size_t to_copy = (old_size < new_size) ? old_size : new_size;
-        memcpy(new_ptr, ptr, to_copy);
-    }
-    return new_ptr;
-}
 
 // --- Capture using runtime lookup to bypass SDK unavailability ---
 
@@ -163,14 +52,11 @@ int capture_fullscreen(PngBuffer *out) {
     fprintf(stderr, "[capture] capture_fullscreen called\n");
 #endif
 
-    arena_begin_capture();
-
     CGImageRef cgImage = capture_main_display_image();
     if (!cgImage) {
 #ifndef NDEBUG
         fprintf(stderr, "[capture] capture_main_display_image returned NULL\n");
 #endif
-        arena_end_capture();
         return -1;
     }
 
@@ -184,10 +70,9 @@ int capture_fullscreen(PngBuffer *out) {
     size_t bytes_per_pixel = 4;
     size_t buffer_size = width * height * bytes_per_pixel;
 
-    uint8_t *pixel_buffer = arena_alloc(buffer_size);
+    uint8_t *pixel_buffer = (uint8_t *)malloc(buffer_size);
     if (!pixel_buffer) {
         CGImageRelease(cgImage);
-        arena_end_capture();
         return -1;
     }
 
@@ -205,7 +90,7 @@ int capture_fullscreen(PngBuffer *out) {
     if (!context) {
         CGColorSpaceRelease(colorSpace);
         CGImageRelease(cgImage);
-        arena_end_capture();
+        free(pixel_buffer);
         return -1;
     }
 
@@ -226,11 +111,15 @@ int capture_fullscreen(PngBuffer *out) {
 
     CGImageRelease(cgImage);
 
+    // Zero and free the raw pixel buffer immediately. It contains a full
+    // screenshot (potentially sensitive). We only keep the final compressed PNG.
+    memset(pixel_buffer, 0, buffer_size);
+    free(pixel_buffer);
+
     if (!png_data || png_size <= 0) {
 #ifndef NDEBUG
         fprintf(stderr, "[capture] stbi_write_png_to_mem failed\n");
 #endif
-        arena_end_capture();
         return -1;
     }
 
@@ -240,9 +129,6 @@ int capture_fullscreen(PngBuffer *out) {
 
     out->data = png_data;
     out->size = png_size;
-
-    // Data stays live in the arena until the caller (platform layer) calls png_buffer_free.
-    // png_buffer_free will do the full zero + reset (Approach A).
     return 0;
 }
 
@@ -253,62 +139,86 @@ int capture_rect(int x, int y, int width, int height, PngBuffer *out) {
     fprintf(stderr, "[capture] capture_rect called (%d,%d %dx%d)\n", x, y, width, height);
 #endif
 
-    arena_begin_capture();
-
-    // Use dlsym to get the function (bypasses SDK unavailability)
-    static CGImageRef (*createImage)(CGRect, uint32_t, uint32_t, uint32_t) = NULL;
-    if (!createImage) {
-        createImage = (CGImageRef (*)(CGRect, uint32_t, uint32_t, uint32_t))
-                      dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
-    }
-
-    if (!createImage) {
-#ifndef NDEBUG
-        fprintf(stderr, "[capture] CGWindowListCreateImage symbol not found\n");
-#endif
-        arena_end_capture();
-        return -1;
-    }
-
     CGRect captureRect = CGRectMake(x, y, width, height);
-    CGImageRef cgImage = createImage(
-        captureRect,
-        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-        kCGNullWindowID,
-        kCGWindowImageDefault
-    );
+    CGImageRef cgImage = NULL;
+
+    // Prefer per-display capture. We use dlsym because CGDisplayCreateImageForRect
+    // is marked unavailable in the macOS 15+ SDK (Apple wants ScreenCaptureKit).
+    // The symbol often still exists at runtime, so this gives us reliable capture
+    // on secondary/external monitors while still compiling on new SDKs.
+    static CGImageRef (*createImageForRect)(CGDirectDisplayID, CGRect) = NULL;
+    if (!createImageForRect) {
+        createImageForRect = (CGImageRef (*)(CGDirectDisplayID, CGRect))
+                             dlsym(RTLD_DEFAULT, "CGDisplayCreateImageForRect");
+    }
+
+    if (createImageForRect) {
+        CGDirectDisplayID displays[8];
+        uint32_t displayCount = 0;
+        CGGetDisplaysWithRect(captureRect, 8, displays, &displayCount);
+
+        if (displayCount > 0) {
+            // Pick the display with the largest intersection (handles rects
+            // contained on secondary monitors or lightly spanning).
+            CGDirectDisplayID bestDisplay = displays[0];
+            CGFloat bestArea = 0;
+            CGRect bestIntersection = CGRectZero;
+
+            for (uint32_t i = 0; i < displayCount; i++) {
+                CGRect dbounds = CGDisplayBounds(displays[i]);
+                CGRect inter = CGRectIntersection(captureRect, dbounds);
+                CGFloat area = inter.size.width * inter.size.height;
+                if (area > bestArea) {
+                    bestArea = area;
+                    bestDisplay = displays[i];
+                    bestIntersection = inter;
+                }
+            }
+
+            if (bestArea > 0) {
+                cgImage = createImageForRect(bestDisplay, bestIntersection);
+            }
+        }
+    }
+
+    // Fallback to the (already dlsym'd) global-rect method. This is what
+    // previously made "monitor1 works" while secondary monitors were flaky.
+    if (!cgImage) {
+        static CGImageRef (*createImage)(CGRect, uint32_t, uint32_t, uint32_t) = NULL;
+        if (!createImage) {
+            createImage = (CGImageRef (*)(CGRect, uint32_t, uint32_t, uint32_t))
+                          dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
+        }
+        if (createImage) {
+            cgImage = createImage(
+                captureRect,
+                kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+                kCGNullWindowID,
+                kCGWindowImageDefault
+            );
+        }
+    }
 
     if (!cgImage) {
 #ifndef NDEBUG
-        fprintf(stderr, "[capture] CGWindowListCreateImage returned NULL for rect\n");
+        fprintf(stderr, "[capture] rect capture returned NULL\n");
 #endif
-        arena_end_capture();
         return -1;
     }
 
 #ifndef NDEBUG
-    size_t pxW = CGImageGetWidth(cgImage);
-    size_t pxH = CGImageGetHeight(cgImage);
-    fprintf(stderr, "[capture] Got CGImage for rect %ldx%ld (pixels: %zux%zu)\n",
-            CGImageGetWidth(cgImage), CGImageGetHeight(cgImage), pxW, pxH);
+    fprintf(stderr, "[capture] Got CGImage for rect %ldx%ld\n",
+            CGImageGetWidth(cgImage), CGImageGetHeight(cgImage));
 #endif
-
-    // Note on multi-monitor / mixed-scale: With a trustworthy global rect (after the
-    // RectSelectionController fixes), the single spanning call to CGWindowListCreateImage
-    // produces a CGImage whose pixel buffer already contains the correctly sampled native
-    // pixels from each participating display. We do not need manual per-screen compositing
-    // for correctness in the common case. If future problems appear on exotic layouts we
-    // can switch to enumerating intersecting displays + CGDisplayCreateImageForRect.
 
     size_t imgWidth  = CGImageGetWidth(cgImage);
     size_t imgHeight = CGImageGetHeight(cgImage);
     size_t bytesPerPixel = 4;
     size_t bufferSize = imgWidth * imgHeight * bytesPerPixel;
 
-    uint8_t *pixelBuffer = arena_alloc(bufferSize);
+    uint8_t *pixelBuffer = (uint8_t *)malloc(bufferSize);
     if (!pixelBuffer) {
         CGImageRelease(cgImage);
-        arena_end_capture();
         return -1;
     }
 
@@ -326,7 +236,7 @@ int capture_rect(int x, int y, int width, int height, PngBuffer *out) {
     if (!context) {
         CGColorSpaceRelease(colorSpace);
         CGImageRelease(cgImage);
-        arena_end_capture();
+        free(pixelBuffer);
         return -1;
     }
 
@@ -347,11 +257,14 @@ int capture_rect(int x, int y, int width, int height, PngBuffer *out) {
 
     CGImageRelease(cgImage);
 
+    // Zero and free the raw pixel buffer immediately (contains screen contents).
+    memset(pixelBuffer, 0, bufferSize);
+    free(pixelBuffer);
+
     if (!pngData || pngSize <= 0) {
 #ifndef NDEBUG
         fprintf(stderr, "[capture] stbi_write_png_to_mem failed for rect\n");
 #endif
-        arena_end_capture();
         return -1;
     }
 
@@ -361,16 +274,18 @@ int capture_rect(int x, int y, int width, int height, PngBuffer *out) {
 #ifndef NDEBUG
     fprintf(stderr, "[capture] Rect PNG encoded successfully (%d bytes)\n", pngSize);
 #endif
-    // Caller must call png_buffer_free (which does arena_end_capture + zero).
     return 0;
 }
 
 void png_buffer_free(PngBuffer *png) {
-    if (!png) return;
+    if (!png || !png->data) return;
 
-    // The entire region from the start of this capture (pixel buffer + any stb internals + final PNG)
-    // is zeroed and the bump pointer reset. This is the core of Approach A.
-    arena_end_capture();
+    // Best-effort zero before free. The PNG bytes may contain a screenshot of
+    // potentially private content (passwords, chats, etc.).
+    if (png->size > 0) {
+        memset(png->data, 0, (size_t)png->size);
+    }
+    free(png->data);
 
     png->data = NULL;
     png->size = 0;

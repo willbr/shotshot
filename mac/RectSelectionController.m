@@ -1,5 +1,6 @@
 #import "RectSelectionController.h"
 #import <CoreGraphics/CoreGraphics.h>
+#include <math.h>
 
 // Forward declarations for the C core
 typedef struct {
@@ -33,9 +34,9 @@ extern void png_buffer_free(PngBuffer *png);
 
 - (BOOL)acceptsFirstResponder { return YES; }
 
-// Local mouse handlers are intentionally minimal now.
-// All drag tracking (including cross-monitor) is driven by global monitors in the controller
-// so that a rect can be drawn starting on one screen and continuing onto another without snapping.
+// Local mouse handlers are intentionally minimal. Drag tracking is driven by a CGEventTap
+// (see mouseSelectionEventCallback) so that clicks are consumed and do not reach apps
+// under the dimmed overlay, while still supporting cross-monitor drags.
 
 - (void)mouseDown:(NSEvent *)event {
     // Only used to ensure this view can become first responder on its own screen.
@@ -57,6 +58,14 @@ extern void png_buffer_free(PngBuffer *png);
 
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
+
+    // Critical for non-opaque NSBackingStoreBuffered windows used as full-screen overlays:
+    // Always start by clearing the dirty area to fully transparent. Without this, pixels from
+    // the previous frame (especially the white border and white size label) remain in the
+    // backing store. The subsequent 50% black dim fill then blends over those remnants,
+    // producing exactly the 1px white horizontal and vertical lines visible while dragging.
+    [[NSColor clearColor] set];
+    NSRectFill(dirtyRect);
 
     NSRect bounds = self.bounds; // this view's screen, 0,0 based
 
@@ -80,33 +89,37 @@ extern void png_buffer_free(PngBuffer *png);
         sel.size.height = -sel.size.height;
     }
 
-    // Four outside dim strips (the parts of *this* screen outside the selection)
-    NSRect top    = NSMakeRect(sel.origin.x, NSMaxY(sel), sel.size.width,  NSMaxY(bounds) - NSMaxY(sel));
-    NSRect bottom = NSMakeRect(sel.origin.x, NSMinY(bounds), sel.size.width, sel.origin.y - NSMinY(bounds));
-    NSRect left   = NSMakeRect(NSMinX(bounds), sel.origin.y, sel.origin.x - NSMinX(bounds), sel.size.height);
-    NSRect right  = NSMakeRect(NSMaxX(sel), sel.origin.y, NSMaxX(bounds) - NSMaxX(sel), sel.size.height);
+    // Snap the selection rect to pixel boundaries for the hole punch and border.
+    // Fractional coordinates from live mouse drag + NSRectFill (even with kCGBlendModeCopy)
+    // produce anti-aliased fringes exactly where the dim fill meets the transparent hole.
+    // This is the source of the 1px white vertical and horizontal lines at the inner edges.
+    NSRect hole;
+    hole.origin.x = floor(sel.origin.x);
+    hole.origin.y = floor(sel.origin.y);
+    hole.size.width = ceil(NSMaxX(sel) - hole.origin.x);
+    hole.size.height = ceil(NSMaxY(sel) - hole.origin.y);
 
-    // The four corner regions (top-left, top-right, bottom-left, bottom-right) are NOT covered
-    // by the four cardinal strips above. We must dim them explicitly.
-    NSRect topLeft     = NSMakeRect(NSMinX(bounds), NSMaxY(sel), sel.origin.x - NSMinX(bounds), NSMaxY(bounds) - NSMaxY(sel));
-    NSRect topRight    = NSMakeRect(NSMaxX(sel), NSMaxY(sel), NSMaxX(bounds) - NSMaxX(sel), NSMaxY(bounds) - NSMaxY(sel));
-    NSRect bottomLeft  = NSMakeRect(NSMinX(bounds), NSMinY(bounds), sel.origin.x - NSMinX(bounds), sel.origin.y - NSMinY(bounds));
-    NSRect bottomRight = NSMakeRect(NSMaxX(sel), NSMinY(bounds), NSMaxX(bounds) - NSMaxX(sel), sel.origin.y - NSMinY(bounds));
-
+    // Fill the entire screen with dim, then punch a clean transparent hole for the
+    // selection area. The hole rect is integer-aligned so the dim/hole boundary has
+    // no subpixel fringe.
     [self.dimColor set];
-    if (top.size.height > 0)          NSRectFill(top);
-    if (bottom.size.height > 0)       NSRectFill(bottom);
-    if (left.size.width > 0)          NSRectFill(left);
-    if (right.size.width > 0)         NSRectFill(right);
+    NSRectFill(bounds);
 
-    if (topLeft.size.width > 0 && topLeft.size.height > 0)         NSRectFill(topLeft);
-    if (topRight.size.width > 0 && topRight.size.height > 0)       NSRectFill(topRight);
-    if (bottomLeft.size.width > 0 && bottomLeft.size.height > 0)   NSRectFill(bottomLeft);
-    if (bottomRight.size.width > 0 && bottomRight.size.height > 0) NSRectFill(bottomRight);
+    CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+    CGContextSaveGState(ctx);
+    CGContextSetBlendMode(ctx, kCGBlendModeCopy);
+    CGContextSetShouldAntialias(ctx, false);
+    [[NSColor clearColor] set];
+    NSRectFill(hole);
+    CGContextRestoreGState(ctx);
 
-    // White border on this screen
+    // White border drawn snapped for a crisp 1px line right at the dim/hole boundary.
     [[NSColor whiteColor] set];
-    NSFrameRectWithWidth(sel, 1.0);
+    NSRect borderRect = NSMakeRect(hole.origin.x + 0.5,
+                                   hole.origin.y + 0.5,
+                                   hole.size.width,
+                                   hole.size.height);
+    NSFrameRectWithWidth(borderRect, 1.0);
 
     // Size label only on the screen the controller chose (avoids duplicates when selection spans monitors)
     if (self.showsSizeLabel) {
@@ -141,7 +154,7 @@ extern void png_buffer_free(PngBuffer *png);
         self.backgroundColor = [NSColor clearColor];
         self.opaque = NO;
         self.hasShadow = NO;   // critical for clean full-desktop overlays, especially multi-monitor
-        self.ignoresMouseEvents = YES;   // important: let mouse events reach the global monitors
+        self.ignoresMouseEvents = YES;   // overlay is transparent to normal responder chain; CGEventTap consumes events so they don't reach background apps
         self.acceptsMouseMovedEvents = YES;
         self.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
 
@@ -164,9 +177,8 @@ extern void png_buffer_free(PngBuffer *png);
 
 @interface RectSelectionController ()
 @property (strong, nonatomic) NSMutableArray<SelectionWindow *> *windows;
-@property (nonatomic, strong) id mouseDownMonitor;
-@property (nonatomic, strong) id mouseDraggedMonitor;
-@property (nonatomic, strong) id mouseUpMonitor;
+@property (nonatomic, assign) CFMachPortRef mouseEventTap;
+@property (nonatomic, assign) CFRunLoopSourceRef mouseEventTapSource;
 @property (nonatomic, strong) id escapeMonitor; // local key monitor for Esc
 @property (nonatomic, assign) NSPoint dragStartGlobal; // fixed anchor point for the current drag
 @end
@@ -206,8 +218,7 @@ extern void png_buffer_free(PngBuffer *png);
 
     [NSApp activateIgnoringOtherApps:YES];
 
-    // Make the first window (usually primary) key so local events have a home,
-    // but we will drive the actual drag with global monitors for cross-monitor reliability.
+    // Make the first window (usually primary) key so local events (Esc) have a home.
     SelectionWindow *firstWin = self.windows.firstObject;
     [firstWin makeKeyAndOrderFront:nil];
     [firstWin makeMainWindow];
@@ -221,24 +232,31 @@ extern void png_buffer_free(PngBuffer *png);
 
     __weak RectSelectionController *weakSelf = self;
 
-    // Global monitors are required so a drag that starts on one screen can continue
-    // when the mouse crosses onto another screen without snapping or dropping the drag.
-    self.mouseDownMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown
-                                                                   handler:^(NSEvent *event) {
-        [weakSelf globalMouseDown:event];
-    }];
+    // CGEventTap for mouse events during selection. We consume the events (return NULL)
+    // so the user's clicks do not activate or click through to applications behind the
+    // dimmed overlay. This is much more reliable than the old NSEvent global monitor approach.
+    CGEventMask mouseMask = CGEventMaskBit(kCGEventLeftMouseDown) |
+                            CGEventMaskBit(kCGEventLeftMouseDragged) |
+                            CGEventMaskBit(kCGEventLeftMouseUp);
 
-    self.mouseDraggedMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDragged
-                                                                      handler:^(NSEvent *event) {
-        [weakSelf globalMouseDragged:event];
-    }];
+    self.mouseEventTap = CGEventTapCreate(
+        kCGSessionEventTap,
+        kCGHeadInsertEventTap,
+        kCGEventTapOptionDefault,
+        mouseMask,
+        mouseSelectionEventCallback,
+        (__bridge void *)self
+    );
 
-    self.mouseUpMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskLeftMouseUp
-                                                                 handler:^(NSEvent *event) {
-        [weakSelf globalMouseUp:event];
-    }];
+    if (self.mouseEventTap) {
+        self.mouseEventTapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, self.mouseEventTap, 0);
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), self.mouseEventTapSource, kCFRunLoopCommonModes);
+        CGEventTapEnable(self.mouseEventTap, true);
+    } else {
+        NSLog(@"[rect] WARNING: failed to create mouse event tap (missing Input Monitoring permission?)");
+    }
 
-    // Local Esc still works because at least one window is key.
+    // Local Esc monitor (works because one window is key).
     self.escapeMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
                                                                handler:^NSEvent *(NSEvent *event) {
         if (event.keyCode == 53) {
@@ -249,16 +267,54 @@ extern void png_buffer_free(PngBuffer *png);
     }];
 }
 
-- (void)endSelection {
-    if (self.mouseDownMonitor)    [NSEvent removeMonitor:self.mouseDownMonitor];
-    if (self.mouseDraggedMonitor) [NSEvent removeMonitor:self.mouseDraggedMonitor];
-    if (self.mouseUpMonitor)      [NSEvent removeMonitor:self.mouseUpMonitor];
-    if (self.escapeMonitor)       [NSEvent removeMonitor:self.escapeMonitor];
+// CGEventTap callback that drives the selection while the dimmed overlays are up.
+// Returning NULL consumes the event so it never reaches apps behind the overlay.
+static CGEventRef mouseSelectionEventCallback(CGEventTapProxy proxy,
+                                              CGEventType type,
+                                              CGEventRef event,
+                                              void *userInfo)
+{
+    (void)proxy;
 
-    self.mouseDownMonitor = nil;
-    self.mouseDraggedMonitor = nil;
-    self.mouseUpMonitor = nil;
-    self.escapeMonitor = nil;
+    RectSelectionController *controller = (__bridge RectSelectionController *)userInfo;
+    if (!controller || !controller.isSelecting) {
+        return event;
+    }
+
+    CGPoint cgLocation = CGEventGetLocation(event);
+    NSPoint location = NSPointFromCGPoint(cgLocation);
+
+    switch (type) {
+        case kCGEventLeftMouseDown:
+            [controller handleSelectionMouseDownAtPoint:location];
+            return NULL; // consume — prevents the click from activating windows underneath
+        case kCGEventLeftMouseDragged:
+            [controller handleSelectionMouseDraggedAtPoint:location];
+            return NULL;
+        case kCGEventLeftMouseUp:
+            [controller handleSelectionMouseUpAtPoint:location];
+            return NULL;
+        default:
+            return event;
+    }
+}
+
+- (void)endSelection {
+    if (self.escapeMonitor) {
+        [NSEvent removeMonitor:self.escapeMonitor];
+        self.escapeMonitor = nil;
+    }
+
+    if (self.mouseEventTap) {
+        CGEventTapEnable(self.mouseEventTap, false);
+        if (self.mouseEventTapSource) {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), self.mouseEventTapSource, kCFRunLoopCommonModes);
+            CFRelease(self.mouseEventTapSource);
+            self.mouseEventTapSource = NULL;
+        }
+        CFRelease(self.mouseEventTap);
+        self.mouseEventTap = NULL;
+    }
 
     for (SelectionWindow *win in self.windows) {
         [win orderOut:nil];
@@ -333,37 +389,29 @@ extern void png_buffer_free(PngBuffer *png);
     }
 }
 
-- (void)globalMouseDown:(NSEvent *)event {
-    NSPoint p = [NSEvent mouseLocation];
-    NSLog(@"[mouse] globalMouseDown received at (%.1f, %.1f)  windows=%lu  isSelecting(before)=%d",
+// Point-based handlers (primary path via CGEventTap during dimmed selection).
+// The tap consumes the events (return NULL) so clicks do not reach apps behind the overlay.
+
+- (void)handleSelectionMouseDownAtPoint:(NSPoint)p {
+    NSLog(@"[mouse] mouseDown at (%.1f, %.1f)  windows=%lu  isSelecting=%d",
           p.x, p.y, (unsigned long)self.windows.count, self.isSelecting);
 
     self.dragStartGlobal = p;
     self.globalSelectionRect = NSMakeRect(p.x, p.y, 0, 0);
     self.isSelecting = YES;
     [self updateAllViews];
-
-    NSLog(@"[mouse]   after down: globalSelectionRect=(%.1f,%.1f) %.1fx%.1f  isSelecting=%d",
-          self.globalSelectionRect.origin.x, self.globalSelectionRect.origin.y,
-          self.globalSelectionRect.size.width, self.globalSelectionRect.size.height,
-          self.isSelecting);
 }
 
-- (void)globalMouseDragged:(NSEvent *)event {
+- (void)handleSelectionMouseDraggedAtPoint:(NSPoint)current {
     if (!self.isSelecting) return;
 
 #ifndef NDEBUG
-    NSPoint currentDbg = [NSEvent mouseLocation];
-    NSLog(@"[mouse] globalMouseDragged at (%.1f, %.1f)", currentDbg.x, currentDbg.y);
+    NSLog(@"[mouse] mouseDragged at (%.1f, %.1f)", current.x, current.y);
 #endif
 
-    NSPoint current = [NSEvent mouseLocation];
-
     // Always compute the selection from the original mouse-down point + current position.
-    // Using the mutating globalSelectionRect as the "anchor" was causing the rect to stop
-    // growing (height stuck at 2px) when dragging past the start point in the "min" direction.
-    CGFloat x = MIN(self.dragStartGlobal.x, current.x);
-    CGFloat y = MIN(self.dragStartGlobal.y, current.y);
+    CGFloat x = fmin(self.dragStartGlobal.x, current.x);
+    CGFloat y = fmin(self.dragStartGlobal.y, current.y);
     CGFloat w = fabs(current.x - self.dragStartGlobal.x);
     CGFloat h = fabs(current.y - self.dragStartGlobal.y);
 
@@ -371,16 +419,15 @@ extern void png_buffer_free(PngBuffer *png);
     [self updateAllViews];
 }
 
-- (void)globalMouseUp:(NSEvent *)event {
-    NSLog(@"[mouse] globalMouseUp received  isSelecting=%d  current global rect=(%.1f,%.1f) %.1fx%.1f",
-          self.isSelecting,
+- (void)handleSelectionMouseUpAtPoint:(NSPoint)ignoredLocation {
+    NSLog(@"[mouse] mouseUp  current global rect=(%.1f,%.1f) %.1fx%.1f",
           self.globalSelectionRect.origin.x, self.globalSelectionRect.origin.y,
           self.globalSelectionRect.size.width, self.globalSelectionRect.size.height);
 
     if (!self.isSelecting) return;
 
     NSRect rect = self.globalSelectionRect;
-    [self endSelection];   // this also removes the global monitors
+    [self endSelection];   // disables the mouse event tap
 
     NSLog(@"[mouse]   after endSelection, about to capture rect=(%.1f,%.1f) %.1fx%.1f",
           rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
@@ -399,10 +446,14 @@ extern void png_buffer_free(PngBuffer *png);
     int result = capture_rect(x, y, w, h, &png);
 
     if (result == 0 && png.data && png.size > 0) {
+        NSData *pngData = [NSData dataWithBytes:png.data length:png.size];
         NSPasteboard *pb = [NSPasteboard generalPasteboard];
         [pb clearContents];
-        BOOL ok = [pb setData:[NSData dataWithBytes:png.data length:png.size]
-                      forType:NSPasteboardTypePNG];
+
+        NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
+        [item setData:pngData forType:NSPasteboardTypePNG];
+        BOOL ok = [pb writeObjects:@[item]];
+
         if (ok) {
 #ifndef NDEBUG
             NSLog(@"Rect capture copied to clipboard (%d bytes)", png.size);
@@ -419,9 +470,22 @@ extern void png_buffer_free(PngBuffer *png);
     }
 }
 
-// Legacy path kept for any direct callers (the view still calls this).
+// Legacy wrappers (still used by finishSelectionWithGlobalRect and any external callers).
+- (void)globalMouseDown:(NSEvent *)event {
+    [self handleSelectionMouseDownAtPoint:[NSEvent mouseLocation]];
+}
+
+- (void)globalMouseDragged:(NSEvent *)event {
+    [self handleSelectionMouseDraggedAtPoint:[NSEvent mouseLocation]];
+}
+
+- (void)globalMouseUp:(NSEvent *)event {
+    [self handleSelectionMouseUpAtPoint:[NSEvent mouseLocation]];
+}
+
+// Legacy path kept for any direct callers.
 - (void)finishSelectionWithGlobalRect:(NSRect)globalRect {
-    [self globalMouseUp:nil]; // delegate to the same logic
+    [self globalMouseUp:nil];
 }
 
 @end

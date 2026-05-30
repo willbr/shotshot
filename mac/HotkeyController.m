@@ -144,11 +144,15 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
 
     NSLog(@"Capture succeeded, PNG size = %d bytes", png.size);
 
-    // Copy to clipboard
+    // PNG-only clipboard (no TIFF). Using NSPasteboardItem + writeObjects
+    // is more reliable for web apps (Google Docs, etc.) than direct setData.
+    NSData *pngData = [NSData dataWithBytes:png.data length:png.size];
     NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
     [pasteboard clearContents];
-    BOOL success = [pasteboard setData:[NSData dataWithBytes:png.data length:png.size]
-                               forType:NSPasteboardTypePNG];
+
+    NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
+    [item setData:pngData forType:NSPasteboardTypePNG];
+    BOOL success = [pasteboard writeObjects:@[item]];
 
     if (success) {
 #ifndef NDEBUG
