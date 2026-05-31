@@ -93,13 +93,30 @@ case "${1:-build}" in
     echo "Installed to /Applications/$APP_NAME.app"
     ;;
 
+  test)
+    echo "Running unit tests..."
+    mkdir -p "$BUILD_DIR"
+    TEST_BIN="$BUILD_DIR/shotshot-tests"
+    # swiftc requires the entry-point file to be named main.swift in multi-file builds.
+    TEST_MAIN="$BUILD_DIR/main.swift"
+    cp Tests/run_tests.swift "$TEST_MAIN"
+    swiftc \
+      -o "$TEST_BIN" \
+      -target "arm64-apple-macos$DEPLOYMENT_TARGET" \
+      -g -Onone \
+      -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers \
+      Sources/CaptureStore.swift \
+      "$TEST_MAIN"
+    "$TEST_BIN"
+    ;;
+
   clean)
     rm -rf "$BUILD_DIR"
     echo "Cleaned build directory"
     ;;
 
   *)
-    echo "Usage: $0 [build|run|debug|install|clean]"
+    echo "Usage: $0 [build|run|debug|install|test|clean]"
     exit 1
     ;;
 esac
