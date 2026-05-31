@@ -46,16 +46,4 @@ struct Annotation: Equatable {
         }
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
-
-    /// True if `point` is within `tolerance` of the annotation (bounding-box test).
-    func hitTest(_ point: CGPoint, tolerance: CGFloat) -> Bool {
-        boundingRect.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
-    }
-
-    /// A copy translated by (dx, dy).
-    func moved(byX dx: CGFloat, y dy: CGFloat) -> Annotation {
-        var copy = self
-        copy.points = points.map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
-        return copy
-    }
 }

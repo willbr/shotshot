@@ -46,11 +46,32 @@ enum CaptureStore {
         return dir
     }
 
-    /// Saves PNG data under a timestamped name in `dir`. Returns the URL or nil.
+    /// Saves PNG data under a timestamped name in `dir`. If a file with that
+    /// name already exists (two captures in the same second), a numeric suffix
+    /// is added so no capture is overwritten. Returns the URL or nil.
     static func save(_ pngData: Data, in dir: URL,
                      date: Date = Date(), calendar: Calendar = .current) -> URL? {
-        let url = dir.appendingPathComponent(timestampedFilename(date: date, calendar: calendar))
+        let name = timestampedFilename(date: date, calendar: calendar)
+        let url = uniqueURL(in: dir, filename: name)
         do { try pngData.write(to: url); return url } catch { return nil }
+    }
+
+    /// Returns `dir/filename`, or `dir/<base>-N.<ext>` with the first free N ≥ 2
+    /// if that name already exists.
+    static func uniqueURL(in dir: URL, filename: String) -> URL {
+        let fm = FileManager.default
+        let candidate = dir.appendingPathComponent(filename)
+        if !fm.fileExists(atPath: candidate.path) { return candidate }
+        let ns = filename as NSString
+        let ext = ns.pathExtension
+        let base = ns.deletingPathExtension
+        var n = 2
+        while true {
+            let name = ext.isEmpty ? "\(base)-\(n)" : "\(base)-\(n).\(ext)"
+            let url = dir.appendingPathComponent(name)
+            if !fm.fileExists(atPath: url.path) { return url }
+            n += 1
+        }
     }
 
     /// Convenience: saves into the default history directory.
