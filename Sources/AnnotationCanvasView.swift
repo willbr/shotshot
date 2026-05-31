@@ -9,12 +9,19 @@ final class AnnotationCanvasView: NSView {
     private(set) var annotations: [Annotation] = []
     private(set) var cropRect: CGRect?          // image pixel coords
 
-    var currentTool: Annotation.Tool = .rectangle
+    var currentTool: Annotation.Tool = .freehand
     var currentColor: RGBAColor = .red
-    var currentThickness: CGFloat = 4
+    var currentThickness: CGFloat = 8
+
+    /// When true, newly drawn rectangles/ellipses are filled solid.
+    var fillShapes: Bool = true
 
     /// When true, drags define a crop rectangle instead of an annotation.
     var cropMode: Bool = false
+
+    /// Called after any committed change (add, crop, undo, redo) so the
+    /// controller can react — e.g. auto-copy the latest result to the clipboard.
+    var onChange: (() -> Void)?
 
     private var draft: Annotation?              // in-progress annotation while dragging
     private var draftCrop: CGRect?              // in-progress crop rect while dragging
@@ -51,6 +58,7 @@ final class AnnotationCanvasView: NSView {
             }
         }
         needsDisplay = true
+        onChange?()
     }
 
     // MARK: - Drawing
@@ -113,7 +121,8 @@ final class AnnotationCanvasView: NSView {
                                color: currentColor, thickness: currentThickness)
         } else {
             draft = Annotation(tool: currentTool, points: [p, p],
-                               color: currentColor, thickness: currentThickness)
+                               color: currentColor, thickness: currentThickness,
+                               filled: fillShapes)
         }
         needsDisplay = true
     }

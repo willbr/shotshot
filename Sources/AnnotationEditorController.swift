@@ -86,13 +86,28 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
         cropButton = cropBtn
         toolbar.addArrangedSubview(cropBtn)
 
+        let fillBtn = NSButton(title: "Fill", target: self, action: #selector(toggleFill(_:)))
+        fillBtn.setButtonType(.pushOnPushOff)
+        fillBtn.state = canvas.fillShapes ? .on : .off
+        toolbar.addArrangedSubview(fillBtn)
+
         toolbar.addArrangedSubview(makeSeparator())
 
         for color in RGBAColor.palette {
             toolbar.addArrangedSubview(makeColorSwatch(color))
         }
 
-        let slider = NSSlider(value: 4, minValue: 1, maxValue: 24,
+        // Custom color picker (opens the macOS color panel).
+        let colorWell = NSColorWell()
+        colorWell.target = self
+        colorWell.action = #selector(colorWellChanged(_:))
+        colorWell.color = NSColor(srgbRed: canvas.currentColor.r, green: canvas.currentColor.g,
+                                  blue: canvas.currentColor.b, alpha: canvas.currentColor.a)
+        colorWell.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        colorWell.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        toolbar.addArrangedSubview(colorWell)
+
+        let slider = NSSlider(value: Double(canvas.currentThickness), minValue: 1, maxValue: 24,
                               target: self, action: #selector(thicknessChanged(_:)))
         slider.widthAnchor.constraint(equalToConstant: 90).isActive = true
         toolbar.addArrangedSubview(slider)
@@ -101,7 +116,8 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
         toolbar.addArrangedSubview(NSButton(title: "↶", target: self, action: #selector(undo)))
         toolbar.addArrangedSubview(NSButton(title: "↷", target: self, action: #selector(redo)))
 
-        // --- Bottom action bar (Save copy | Copy) ---
+        // --- Bottom action bar (Reset crop | Save copy) ---
+        // Edits auto-copy to the clipboard, so there is no explicit Copy button.
         let actions = NSStackView()
         actions.orientation = .horizontal
         actions.spacing = 10
@@ -113,9 +129,9 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
         actions.addArrangedSubview(clearCropBtn)
         let saveBtn = NSButton(title: "Save copy", target: self, action: #selector(saveCopy))
         actions.addArrangedSubview(saveBtn)
-        let copyBtn = NSButton(title: "Copy", target: self, action: #selector(copyToClipboard))
-        copyBtn.keyEquivalent = "\r"
-        actions.addArrangedSubview(copyBtn)
+
+        // Auto-copy the flattened image to the clipboard after every edit.
+        canvas.onChange = { [weak self] in self?.copyToClipboard() }
 
         canvas.translatesAutoresizingMaskIntoConstraints = false
 
@@ -140,7 +156,7 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
             actions.heightAnchor.constraint(equalToConstant: actionsH),
         ])
 
-        selectTool(.rectangle)
+        selectTool(.freehand)
     }
 
     private func makeSeparator() -> NSView {
@@ -215,6 +231,16 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
         let parts = id.split(separator: ",").compactMap { Double($0) }
         guard parts.count == 4 else { return }
         canvas.currentColor = RGBAColor(r: parts[0], g: parts[1], b: parts[2], a: parts[3])
+    }
+
+    @objc private func colorWellChanged(_ sender: NSColorWell) {
+        guard let c = sender.color.usingColorSpace(.sRGB) else { return }
+        canvas.currentColor = RGBAColor(r: c.redComponent, g: c.greenComponent,
+                                        b: c.blueComponent, a: c.alphaComponent)
+    }
+
+    @objc private func toggleFill(_ sender: NSButton) {
+        canvas.fillShapes = (sender.state == .on)
     }
 
     @objc private func thicknessChanged(_ sender: NSSlider) {
