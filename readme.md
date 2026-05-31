@@ -12,11 +12,15 @@ Functional macOS menubar agent (LSUIElement).
 - `⌘⇧S` — Rectangular region selection with reliable multi-monitor support
 - `⌘⇧4` — Fullscreen capture of the main display
 - PNG copied directly to the clipboard
+- Every capture is saved to `~/Pictures/Shotshot` (and still copied to the clipboard)
+- Annotation editor (rectangle, ellipse, freehand, highlighter, crop, color & thickness, undo/redo)
+- Menubar: "Annotate on screenshot" toggle (region captures auto-open the editor) and "Annotate recent screenshots" submenu
 - Proper permission handling (Accessibility, Screen Recording, Input Monitoring)
 - Minimal menubar icon + Quit menu
 
 ### Not Yet Implemented
-- Annotation tools
+- Arrow and text annotation tools
+- Blur / pixelate redaction
 - Other platforms (Windows/Linux)
 
 ## Hotkeys
@@ -32,6 +36,7 @@ Functional macOS menubar agent (LSUIElement).
 ./build.sh install    # Build + install to /Applications (recommended)
 ./build.sh debug      # Build + run with live console output
 ./build.sh build      # Just build
+./build.sh test       # Run the unit tests (pure logic)
 ```
 
 The `install` and `debug` targets place a properly signed copy in `/Applications` for reliable TCC permissions.
@@ -60,7 +65,7 @@ The app will guide you to the correct System Settings panes on first run.
 
 ## Future
 
-- Annotation tools (the original goal)
+- More annotation tools (arrows, text, blur / pixelate redaction)
 - Possible future Windows/Linux ports (the previous C core made this easier; a Swift rewrite means those would need separate implementations or a new cross-platform layer)
 
 ---
