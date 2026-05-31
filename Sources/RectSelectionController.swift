@@ -568,6 +568,22 @@ final class RectSelectionController {
         } else {
             print("[mouse] Rect capture: failed to write to pasteboard")
         }
+
+        // Persist to the history folder.
+        let savedURL = CaptureStore.save(pngData)
+        if savedURL == nil {
+            print("[mouse] Failed to save region capture to disk")
+        }
+
+        // Auto-open the editor when the toggle is on.
+        if Settings.annotateOnScreenshot {
+            if let savedURL = savedURL {
+                AppDelegate.shared?.openEditor(url: savedURL)
+            } else if let cgImage = Capture.image(for: rect) {
+                // Fall back to the in-memory image if the disk save failed.
+                AppDelegate.shared?.openEditor(image: cgImage, sourceURL: nil)
+            }
+        }
     }
 
     // Legacy compatibility shims (kept so nothing external breaks if it calls them)

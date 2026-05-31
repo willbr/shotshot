@@ -135,6 +135,11 @@ final class HotkeyController {
         } else {
             print("Failed to write PNG to clipboard")
         }
+
+        // Persist to the history folder (fullscreen never auto-opens the editor).
+        if CaptureStore.save(pngData) == nil {
+            print("[capture] Failed to save fullscreen capture to disk")
+        }
     }
 
     private func startRectSelection() {
