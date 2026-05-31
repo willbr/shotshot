@@ -79,10 +79,29 @@ func testCaptureStoreFilesystem() {
     check((try? Data(contentsOf: au!)) == annotated, "annotated bytes round-trip")
 }
 
+func testAnnotationModel() {
+    let a = Annotation(tool: .rectangle,
+                       points: [CGPoint(x: 10, y: 20), CGPoint(x: 4, y: 8)],
+                       color: .red, thickness: 3)
+    check(a.boundingRect == CGRect(x: 4, y: 8, width: 6, height: 12),
+          "boundingRect normalizes corner order")
+    check(a.hitTest(CGPoint(x: 5, y: 9), tolerance: 0), "hitTest true inside")
+    check(!a.hitTest(CGPoint(x: 100, y: 100), tolerance: 0), "hitTest false outside")
+    check(a.hitTest(CGPoint(x: 2, y: 8), tolerance: 3),
+          "hitTest true within tolerance band")
+
+    let moved = a.moved(byX: 5, y: -2)
+    check(moved.points == [CGPoint(x: 15, y: 18), CGPoint(x: 9, y: 6)],
+          "moved offsets every point")
+    check(a.points == [CGPoint(x: 10, y: 20), CGPoint(x: 4, y: 8)],
+          "moved leaves the original unchanged")
+}
+
 // === add new test calls above this line ===
 
 testCaptureStorePure()
 testCaptureStoreFilesystem()
+testAnnotationModel()
 
 if failures > 0 {
     print("\n\(failures) check(s) FAILED")

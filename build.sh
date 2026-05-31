@@ -106,6 +106,7 @@ case "${1:-build}" in
       -g -Onone \
       -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers \
       Sources/CaptureStore.swift \
+      Sources/Annotation.swift \
       "$TEST_MAIN"
     "$TEST_BIN"
     ;;
