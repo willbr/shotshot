@@ -60,7 +60,7 @@ case "${1:-build}" in
       -emit-executable \
       -o "$MACOS/$APP_NAME" \
       -target "arm64-apple-macos$DEPLOYMENT_TARGET" \
-      -g -Onone \
+      -g -Onone -D DEBUG \
       "${FRAMEWORKS[@]}" \
       $SRC_DIR/*.swift
 

@@ -187,22 +187,37 @@ final class SelectionView: NSView {
 /// A borderless, high-level, transparent overlay window for one physical screen.
 final class SelectionWindow: NSWindow {
     let selectionView: SelectionView
+    /// The global frame of the physical screen this window was created to cover.
+    /// We store this because after creation (especially on secondary displays with
+    /// separate Spaces), win.frame can sometimes be reported incorrectly by AppKit.
+    /// We use this authoritative value for intersection math in updateAllViews.
+    var screenFrame: NSRect   // written once after super.init; logically immutable after creation
 
     init(contentRect: NSRect) {
         // The view must have a 0,0-based frame. The window's frame (set later) carries the
-        // global origin of the union rect. Using the raw contentRect (which can have negative
-        // .origin on setups with screens left/above the primary) would give the view a
-        // non-zero origin, breaking all per-screen strip math and causing only the primary
-        // to receive dimming / drawing.
-        let viewFrame = NSRect(origin: .zero, size: contentRect.size)
+        // global origin of the screen rect (which may be negative or have non-zero Y on
+        // secondary displays left/above the primary).
+        //
+        // Critically, we also initialize the *window* with a zero-origin rect. Passing a
+        // contentRect with negative .origin or .origin.y != 0 directly to NSWindow.init
+        // can cause the window to be misplaced, clamped, or report a wrong frame later on
+        // secondary displays. We apply the real global position (via setFrame) immediately
+        // after creation.
+        let size = contentRect.size
+        let viewFrame = NSRect(origin: .zero, size: size)
         selectionView = SelectionView(frame: viewFrame)
 
+        let initRect = NSRect(origin: .zero, size: size)
+        screenFrame = contentRect   // set a value before super (Swift rule); will be the correct intended rect
         super.init(
-            contentRect: contentRect,
+            contentRect: initRect,
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
+
+        // Ensure it has the caller's intended rect (the one with the real global origin for this screen)
+        screenFrame = contentRect
 
         level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)))
         backgroundColor = .clear
@@ -210,7 +225,10 @@ final class SelectionWindow: NSWindow {
         hasShadow = false // critical for clean full-desktop overlays, especially multi-monitor
         ignoresMouseEvents = true // overlay is transparent to normal responder chain; CGEventTap consumes events
         acceptsMouseMovedEvents = true
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // .stationary helps the overlay appear reliably on secondary displays / separate Spaces.
+        // .fullScreenAuxiliary can prevent windows from showing on non-primary displays in many configs.
+        collectionBehavior = [.canJoinAllSpaces, .stationary]
+        displaysWhenScreenProfileChanges = true
 
         contentView = selectionView
     }
@@ -236,54 +254,79 @@ final class RectSelectionController {
     func startSelection() {
         endSelection()
 
-        let screens = NSScreen.screens
-        #if DEBUG
-        print("[rect] startSelection — \(screens.count) physical screen(s) detected")
-        #endif
-        guard !screens.isEmpty else { return }
+        // Use CGDirectDisplay bounds for geometry. These are in the exact same global
+        // coordinate space that CGEventTap delivers (event.location). NSScreen.frame
+        // can report different origins (especially Y) on some multi-monitor + separate
+        // Spaces + scaling setups, which is why the live selection rect appeared
+        // "clamped to screen 1" even though the final capture rects were correct.
+        var displayIDs = [CGDirectDisplayID](repeating: 0, count: 16)
+        var displayCount: UInt32 = 0
+        CGGetActiveDisplayList(16, &displayIDs, &displayCount)
 
-        // Capture the desktop content for each screen *before* creating any overlay windows.
-        // This is what makes the image inside the selection rectangle frozen while the user drags.
-        // If we captured after orderFront, the dim overlays would appear in the frozen image.
-        // We capture into an array (parallel to `screens`) to avoid using CGRect as a dictionary key
-        // (Hashable conformance for CGRect is only guaranteed on macOS 15+).
+        var displayFrames: [CGRect] = []
+        for i in 0..<Int(displayCount) {
+            displayFrames.append(CGDisplayBounds(displayIDs[i]))
+        }
+
+        #if DEBUG
+        print("[rect] startSelection — \(displayFrames.count) physical display(s) detected via CG")
+        #endif
+        guard !displayFrames.isEmpty else { return }
+
+        // Capture the desktop content for each display *before* creating any overlay windows.
         var frozenImages: [CGImage?] = []
-        for screen in screens {
-            let frame = screen.frame
+        for frame in displayFrames {
             let img = Capture.image(for: frame)
             frozenImages.append(img)
             #if DEBUG
             if let img = img {
-                print("[rect] froze \(img.width)x\(img.height) px for screen \(frame)")
+                print("[rect] froze \(img.width)x\(img.height) px for display \(frame)")
             } else {
                 print("[rect] WARNING: failed to capture frozen image for \(frame)")
             }
             #endif
         }
 
-        // One properly-sized, max-level window per physical screen.
-        // This is the most reliable way on macOS to get dimming + drawing on *every* monitor,
-        // especially with negative global origins or mixed-scale setups.
-        for (index, screen) in screens.enumerated() {
-            let screenFrame = screen.frame
-            let win = SelectionWindow(contentRect: screenFrame)
-            win.setFrame(screenFrame, display: true)
+        // One properly-sized, max-level window per physical display, using the CG rects
+        // so that mouse event coordinates will intersect them correctly.
+        for (index, frame) in displayFrames.enumerated() {
+            let nsFrame = NSRect(x: frame.origin.x, y: frame.origin.y,
+                                 width: frame.size.width, height: frame.size.height)
+            let win = SelectionWindow(contentRect: nsFrame)
+            win.setFrame(nsFrame, display: true)
 
             if index < frozenImages.count, let frozen = frozenImages[index] {
                 win.selectionView.capturedImage = frozen
             }
 
             windows.append(win)
-            win.orderFront(nil)
+            win.orderFrontRegardless()
+            print("[rect]   created window[\(index)] for display \(nsFrame)")
         }
 
         NSApp.activate(ignoringOtherApps: true)
+
+        // Re-assert the exact global frames on all displays after activation.
+        // This is often required on secondary monitors (especially with "Displays have separate Spaces").
+        for (i, win) in windows.enumerated() {
+            let f = win.screenFrame   // use the authoritative stored value
+            win.setFrame(f, display: true)
+            win.orderFrontRegardless()
+            print("[rect]   window[\(i)] final frame = \(f)")
+        }
 
         // Make the first window (usually primary) key so local events (Esc) have a home.
         if let firstWin = windows.first {
             firstWin.makeKeyAndOrderFront(nil)
             firstWin.makeMain()
             firstWin.makeFirstResponder(firstWin.selectionView)
+        }
+
+        // Force every overlay (including secondary displays) to composite right now.
+        // Some macOS configs (separate Spaces + secondary monitors) need this extra kick.
+        for win in windows {
+            win.display()
+            win.selectionView.display()
         }
 
         isSelecting = true
@@ -381,16 +424,14 @@ final class RectSelectionController {
     }
 
     private func updateAllViews() {
-        #if DEBUG
         print("[mouse] updateAllViews called  globalRect=\(globalSelectionRect)  isSelecting=\(isSelecting)  windows=\(windows.count)")
-        #endif
 
         // Decide which screen (if any) should display the size label — the one with the largest overlap.
         var labelView: SelectionView?
         var maxArea: CGFloat = 0
 
         for win in windows {
-            let screenGlobal = win.frame
+            let screenGlobal = win.screenFrame   // authoritative value from NSScreen at creation time
             let intersection = globalSelectionRect.intersection(screenGlobal)
 
             let v = win.selectionView
@@ -399,9 +440,7 @@ final class RectSelectionController {
 
             if intersection.isEmpty {
                 v.localSelectionRect = .zero
-                #if DEBUG
-                print("[mouse]   screen \(win.frame) → no intersection (full dim)")
-                #endif
+                print("[mouse]   screen \(win.screenFrame) → no intersection (full dim)")
             } else {
                 var local = win.convertFromScreen(intersection)
                 local = local.intersection(v.bounds)
@@ -419,9 +458,7 @@ final class RectSelectionController {
 
                 v.localSelectionRect = normalized
 
-                #if DEBUG
-                print("[mouse]   screen \(win.frame) → intersection global=\(intersection)  local=\(normalized)")
-                #endif
+                print("[mouse]   screen \(win.screenFrame) → intersection global=\(intersection)  local=\(normalized)")
 
                 let area = intersection.width * intersection.height
                 if area > maxArea {
@@ -433,11 +470,13 @@ final class RectSelectionController {
 
         labelView?.showsSizeLabel = true
 
-        // Redraw every window
+        // Redraw every window.
+        // Use the stronger display() calls (not just displayIfNeeded) because on secondary
+        // displays the window server can be lazy about showing updates after orderFrontRegardless.
         for win in windows {
             win.selectionView.needsDisplay = true
-            win.displayIfNeeded()
-            win.selectionView.displayIfNeeded()
+            win.display()
+            win.selectionView.display()
         }
     }
 
