@@ -13,7 +13,12 @@ Functional macOS menubar agent (LSUIElement).
 - `⌘⇧4` — Fullscreen capture of the main display
 - PNG copied directly to the clipboard
 - Every capture is saved to `~/Pictures/Shotshot` (and still copied to the clipboard)
-- Annotation editor (rectangle, ellipse, freehand, highlighter, crop, color & thickness, undo/redo)
+- Annotation editor:
+  - Tools: freehand pencil (default, thicker stroke), rectangle, ellipse, highlighter, crop
+  - Optional solid **fill** for rectangles/ellipses (toggle defaults on)
+  - Color presets with the selected swatch highlighted, plus a custom color picker
+  - Adjustable stroke thickness and undo/redo
+  - Every edit auto-copies the flattened result to the clipboard; **Save copy** writes a `-annotated.png` alongside the original
 - Menubar: "Annotate on screenshot" toggle (region captures auto-open the editor) and "Annotate recent screenshots" submenu
 - Proper permission handling (Accessibility, Screen Recording, Input Monitoring)
 - Minimal menubar icon + Quit menu
