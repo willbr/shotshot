@@ -107,6 +107,7 @@ case "${1:-build}" in
       -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers \
       Sources/CaptureStore.swift \
       Sources/Annotation.swift \
+      Sources/AnnotationRenderer.swift \
       "$TEST_MAIN"
     "$TEST_BIN"
     ;;

@@ -97,8 +97,78 @@ func testAnnotationModel() {
           "moved leaves the original unchanged")
 }
 
+// Reads the RGBA (0–1) of one pixel from a CGImage by redrawing it 1:1.
+func samplePixel(_ image: CGImage, x: Int, y: Int) -> (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat)? {
+    let w = image.width, h = image.height
+    var buf = [UInt8](repeating: 0, count: w * h * 4)
+    let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+    guard let ctx = CGContext(data: &buf, width: w, height: h, bitsPerComponent: 8,
+                              bytesPerRow: w * 4, space: cs,
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { return nil }
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+    // CGContext row 0 is the bottom; convert from top-left y.
+    let row = h - 1 - y
+    let i = (row * w + x) * 4
+    return (CGFloat(buf[i]) / 255, CGFloat(buf[i+1]) / 255,
+            CGFloat(buf[i+2]) / 255, CGFloat(buf[i+3]) / 255)
+}
+
+func makeWhiteImage(_ w: Int, _ h: Int) -> CGImage {
+    let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+    let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                        bytesPerRow: 0, space: cs,
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+    ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    return ctx.makeImage()!
+}
+
+func testAnnotationRenderer() {
+    // Coordinate mapping: 100x50 image fit into 200x200 view -> scale 2, centered vertically.
+    let frame = AnnotationRenderer.imageFrame(imageSize: CGSize(width: 100, height: 50),
+                                              in: CGSize(width: 200, height: 200))
+    check(frame == CGRect(x: 0, y: 50, width: 200, height: 100), "imageFrame aspect-fits centered")
+
+    let p0 = AnnotationRenderer.viewToImage(CGPoint(x: 0, y: 50),
+                imageSize: CGSize(width: 100, height: 50), viewSize: CGSize(width: 200, height: 200))
+    check(p0 == CGPoint(x: 0, y: 0), "viewToImage maps frame origin to image origin")
+    let p1 = AnnotationRenderer.viewToImage(CGPoint(x: 200, y: 150),
+                imageSize: CGSize(width: 100, height: 50), viewSize: CGSize(width: 200, height: 200))
+    check(p1 == CGPoint(x: 100, y: 50), "viewToImage maps far corner to image far corner")
+
+    // Flatten: a red horizontal line across the middle of a 10x10 white image.
+    let base = makeWhiteImage(10, 10)
+    let line = Annotation(tool: .freehand,
+                          points: [CGPoint(x: 0, y: 5), CGPoint(x: 9, y: 5)],
+                          color: .red, thickness: 4)
+    let full = AnnotationRenderer.render(base: base, annotations: [line], crop: nil)
+    check(full?.width == 10 && full?.height == 10, "render returns full-size image")
+    if let full = full, let px = samplePixel(full, x: 5, y: 5) {
+        check(px.r > 0.6 && px.g < 0.4 && px.b < 0.4, "annotation pixel is red at the line center")
+    } else {
+        check(false, "could not sample rendered center pixel")
+    }
+    if let full = full, let corner = samplePixel(full, x: 0, y: 0) {
+        check(corner.r > 0.8 && corner.g > 0.8 && corner.b > 0.8,
+              "untouched corner stays white")
+    } else {
+        check(false, "could not sample rendered corner pixel")
+    }
+
+    // Crop changes the output size.
+    let cropped = AnnotationRenderer.render(base: base, annotations: [],
+                                            crop: CGRect(x: 2, y: 2, width: 4, height: 4))
+    check(cropped?.width == 4 && cropped?.height == 4, "render crops to the crop rect")
+
+    // PNG encode produces non-empty data.
+    let png = AnnotationRenderer.pngData(from: base)
+    check((png?.count ?? 0) > 0, "pngData returns encoded bytes")
+}
+
 // === add new test calls above this line ===
 
+testAnnotationRenderer()
 testCaptureStorePure()
 testCaptureStoreFilesystem()
 testAnnotationModel()
