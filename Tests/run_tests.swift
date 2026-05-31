@@ -42,15 +42,47 @@ func testCaptureStorePure() {
     check(CaptureStore.annotatedName(for: noExt) == "foo-annotated",
           "annotatedName handles missing extension")
 
-    let a = (url: URL(fileURLWithPath: "/tmp/a.png"), date: makeDate(2026, 1, 1, 0, 0, 0))
-    let b = (url: URL(fileURLWithPath: "/tmp/b.png"), date: makeDate(2026, 1, 2, 0, 0, 0))
-    check(CaptureStore.sortedNewestFirst([a, b]) == [b.url, a.url],
-          "sortedNewestFirst orders newest first")
+    let a = URL(fileURLWithPath: "/tmp/Shotshot 2026-01-01 at 00.00.00.png")
+    let b = URL(fileURLWithPath: "/tmp/Shotshot 2026-01-02 at 00.00.00.png")
+    check(CaptureStore.sortedNewestFirst([a, b]) == [b, a],
+          "sortedNewestFirst orders newest first by filename")
+}
+
+func testCaptureStoreFilesystem() {
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory
+        .appendingPathComponent("shotshot-test-\(UInt64(Date().timeIntervalSince1970 * 1000))")
+    try? fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: tmp) }
+
+    let data = Data([0x89, 0x50, 0x4e, 0x47]) // not a real PNG; bytes round-trip is enough
+    let d1 = makeDate(2026, 5, 31, 10, 0, 0)
+    let d2 = makeDate(2026, 5, 31, 11, 0, 0)
+    let u1 = CaptureStore.save(data, in: tmp, date: d1, calendar: makeCalendar())
+    let u2 = CaptureStore.save(data, in: tmp, date: d2, calendar: makeCalendar())
+    check(u1 != nil && u2 != nil, "save writes files and returns URLs")
+    check((try? Data(contentsOf: u1!)) == data, "saved bytes round-trip")
+
+    let recent = CaptureStore.recent(limit: 10, in: tmp)
+    check(recent.count == 2, "recent lists both PNGs")
+    check(recent.first?.lastPathComponent == u2?.lastPathComponent,
+          "recent is newest-first")
+
+    let limited = CaptureStore.recent(limit: 1, in: tmp)
+    check(limited.map { $0.lastPathComponent } == [u2?.lastPathComponent].compactMap { $0 },
+          "recent respects the limit")
+
+    let annotated = Data([1, 2, 3])
+    let au = CaptureStore.saveAnnotatedCopy(of: u1!, pngData: annotated)
+    check(au?.lastPathComponent == CaptureStore.annotatedName(for: u1!),
+          "saveAnnotatedCopy uses the -annotated name")
+    check((try? Data(contentsOf: au!)) == annotated, "annotated bytes round-trip")
 }
 
 // === add new test calls above this line ===
 
 testCaptureStorePure()
+testCaptureStoreFilesystem()
 
 if failures > 0 {
     print("\n\(failures) check(s) FAILED")
