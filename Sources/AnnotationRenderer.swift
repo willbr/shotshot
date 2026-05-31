@@ -64,13 +64,23 @@ enum AnnotationRenderer {
         ctx.setLineCap(.round)
         switch a.tool {
         case .rectangle:
-            ctx.setLineWidth(a.thickness)
-            ctx.setStrokeColor(a.color.cgColor)
-            ctx.stroke(a.boundingRect)
+            if a.filled {
+                ctx.setFillColor(a.color.cgColor)
+                ctx.fill(a.boundingRect)
+            } else {
+                ctx.setLineWidth(a.thickness)
+                ctx.setStrokeColor(a.color.cgColor)
+                ctx.stroke(a.boundingRect)
+            }
         case .ellipse:
-            ctx.setLineWidth(a.thickness)
-            ctx.setStrokeColor(a.color.cgColor)
-            ctx.strokeEllipse(in: a.boundingRect)
+            if a.filled {
+                ctx.setFillColor(a.color.cgColor)
+                ctx.fillEllipse(in: a.boundingRect)
+            } else {
+                ctx.setLineWidth(a.thickness)
+                ctx.setStrokeColor(a.color.cgColor)
+                ctx.strokeEllipse(in: a.boundingRect)
+            }
         case .freehand:
             ctx.setLineWidth(a.thickness)
             ctx.setStrokeColor(a.color.cgColor)

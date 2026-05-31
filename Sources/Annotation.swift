@@ -35,6 +35,9 @@ struct Annotation: Equatable {
     var points: [CGPoint]
     var color: RGBAColor
     var thickness: CGFloat
+    /// When true, rectangle/ellipse are drawn as a solid opaque fill in `color`
+    /// instead of an outline. Ignored by the open-stroke tools.
+    var filled: Bool = false
 
     /// Normalized bounding box of `points`.
     var boundingRect: CGRect {

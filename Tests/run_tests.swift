@@ -153,6 +153,31 @@ func testAnnotationRenderer() {
         check(false, "could not sample rendered corner pixel")
     }
 
+    // Filled rectangle: interior pixel takes the fill color.
+    let filledRect = Annotation(tool: .rectangle,
+                                points: [CGPoint(x: 2, y: 2), CGPoint(x: 8, y: 8)],
+                                color: .green, thickness: 2, filled: true)
+    let filledImg = AnnotationRenderer.render(base: makeWhiteImage(10, 10),
+                                              annotations: [filledRect], crop: nil)
+    if let filledImg = filledImg, let px = samplePixel(filledImg, x: 5, y: 5) {
+        check(px.g > 0.6 && px.r < 0.4, "filled rectangle interior takes the fill color")
+    } else {
+        check(false, "could not sample filled rectangle interior")
+    }
+
+    // Outline-only rectangle leaves its interior untouched (white).
+    let outlineRect = Annotation(tool: .rectangle,
+                                 points: [CGPoint(x: 2, y: 2), CGPoint(x: 8, y: 8)],
+                                 color: .green, thickness: 1, filled: false)
+    let outlineImg = AnnotationRenderer.render(base: makeWhiteImage(10, 10),
+                                               annotations: [outlineRect], crop: nil)
+    if let outlineImg = outlineImg, let px = samplePixel(outlineImg, x: 5, y: 5) {
+        check(px.r > 0.8 && px.g > 0.8 && px.b > 0.8,
+              "outline-only rectangle leaves its interior white")
+    } else {
+        check(false, "could not sample outline rectangle interior")
+    }
+
     // Crop changes the output size.
     let cropped = AnnotationRenderer.render(base: base, annotations: [],
                                             crop: CGRect(x: 2, y: 2, width: 4, height: 4))
