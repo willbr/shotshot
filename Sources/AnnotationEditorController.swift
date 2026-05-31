@@ -75,6 +75,9 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
         toolbar.spacing = 8
         toolbar.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
         toolbar.translatesAutoresizingMaskIntoConstraints = false
+        // Opaque background so canvas content never shows through the toolbar strip.
+        toolbar.wantsLayer = true
+        toolbar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
         addToolButton(to: toolbar, tool: .rectangle, title: "▭")
         addToolButton(to: toolbar, tool: .ellipse,   title: "◯")
@@ -128,9 +131,11 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
         canvas.onChange = { [weak self] in self?.copyToClipboard() }
 
         canvas.translatesAutoresizingMaskIntoConstraints = false
+        canvas.clipsToBounds = true // keep annotation drawing inside the canvas
 
-        root.addSubview(toolbar)
+        // Add the canvas first so the (opaque) toolbar stays in front of it.
         root.addSubview(canvas)
+        root.addSubview(toolbar)
 
         NSLayoutConstraint.activate([
             toolbar.topAnchor.constraint(equalTo: root.topAnchor),
