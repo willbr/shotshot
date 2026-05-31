@@ -16,6 +16,7 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
     private let sourceURL: URL?
     private var toolButtons: [Annotation.Tool: NSButton] = [:]
     private var cropButton: NSButton?
+    private var colorSwatches: [NSButton] = []
 
     /// Called when the window closes so the coordinator can release this controller.
     var onClose: ((AnnotationEditorController) -> Void)?
@@ -81,21 +82,24 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
         addToolButton(to: toolbar, tool: .freehand,  title: "✎")
         addToolButton(to: toolbar, tool: .highlighter, title: "🖍")
 
-        let cropBtn = NSButton(title: "Crop", target: self, action: #selector(selectCrop))
-        cropBtn.setButtonType(.toggle)
-        cropButton = cropBtn
-        toolbar.addArrangedSubview(cropBtn)
-
         let fillBtn = NSButton(title: "Fill", target: self, action: #selector(toggleFill(_:)))
         fillBtn.setButtonType(.pushOnPushOff)
         fillBtn.state = canvas.fillShapes ? .on : .off
         toolbar.addArrangedSubview(fillBtn)
+
+        let cropBtn = NSButton(title: "Crop", target: self, action: #selector(selectCrop))
+        cropBtn.setButtonType(.toggle)
+        cropButton = cropBtn
+        toolbar.addArrangedSubview(cropBtn)
 
         toolbar.addArrangedSubview(makeSeparator())
 
         for color in RGBAColor.palette {
             toolbar.addArrangedSubview(makeColorSwatch(color))
         }
+        // Ring the swatch matching the default current color.
+        highlightSwatch(zip(RGBAColor.palette, colorSwatches)
+            .first { $0.0 == canvas.currentColor }?.1)
 
         // Custom color picker (opens the macOS color panel).
         let colorWell = NSColorWell()
@@ -200,11 +204,20 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
         b.isBordered = false
         b.layer?.backgroundColor = color.cgColor
         b.layer?.cornerRadius = 9
+        b.layer?.borderColor = NSColor.controlAccentColor.cgColor
         b.widthAnchor.constraint(equalToConstant: 18).isActive = true
         b.heightAnchor.constraint(equalToConstant: 18).isActive = true
         b.identifier = NSUserInterfaceItemIdentifier(
             "\(color.r),\(color.g),\(color.b),\(color.a)")
+        colorSwatches.append(b)
         return b
+    }
+
+    /// Rings the selected preset swatch (or none, when a custom color is in use).
+    private func highlightSwatch(_ selected: NSButton?) {
+        for b in colorSwatches {
+            b.layer?.borderWidth = (b === selected) ? 3 : 0
+        }
     }
 
     // MARK: - Actions
@@ -231,12 +244,14 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
         let parts = id.split(separator: ",").compactMap { Double($0) }
         guard parts.count == 4 else { return }
         canvas.currentColor = RGBAColor(r: parts[0], g: parts[1], b: parts[2], a: parts[3])
+        highlightSwatch(sender)
     }
 
     @objc private func colorWellChanged(_ sender: NSColorWell) {
         guard let c = sender.color.usingColorSpace(.sRGB) else { return }
         canvas.currentColor = RGBAColor(r: c.redComponent, g: c.greenComponent,
                                         b: c.blueComponent, a: c.alphaComponent)
+        highlightSwatch(nil) // custom color — no preset selected
     }
 
     @objc private func toggleFill(_ sender: NSButton) {
