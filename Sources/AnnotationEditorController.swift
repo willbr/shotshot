@@ -68,9 +68,8 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
         root.wantsLayer = true
 
         let toolbarH: CGFloat = 44
-        let actionsH: CGFloat = 48
 
-        // --- Top toolbar (tools | color swatches | thickness | undo/redo) ---
+        // --- Top toolbar (tools | fill | crop | colors | thickness | undo/redo | save) ---
         let toolbar = NSStackView()
         toolbar.orientation = .horizontal
         toolbar.spacing = 8
@@ -120,28 +119,18 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
         toolbar.addArrangedSubview(NSButton(title: "↶", target: self, action: #selector(undo)))
         toolbar.addArrangedSubview(NSButton(title: "↷", target: self, action: #selector(redo)))
 
-        // --- Bottom action bar (Reset crop | Save copy) ---
-        // Edits auto-copy to the clipboard, so there is no explicit Copy button.
-        let actions = NSStackView()
-        actions.orientation = .horizontal
-        actions.spacing = 10
-        actions.alignment = .centerY
-        actions.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
-        actions.translatesAutoresizingMaskIntoConstraints = false
-        actions.addArrangedSubview(NSView()) // spacer pushes buttons right
-        let clearCropBtn = NSButton(title: "Reset crop", target: self, action: #selector(resetCrop))
-        actions.addArrangedSubview(clearCropBtn)
-        let saveBtn = NSButton(title: "Save copy", target: self, action: #selector(saveCopy))
-        actions.addArrangedSubview(saveBtn)
+        toolbar.addArrangedSubview(makeSeparator())
+        toolbar.addArrangedSubview(NSButton(title: "Reset crop", target: self, action: #selector(resetCrop)))
+        toolbar.addArrangedSubview(NSButton(title: "Save copy", target: self, action: #selector(saveCopy)))
 
         // Auto-copy the flattened image to the clipboard after every edit.
+        // (Edits auto-copy, so there is no explicit Copy button.)
         canvas.onChange = { [weak self] in self?.copyToClipboard() }
 
         canvas.translatesAutoresizingMaskIntoConstraints = false
 
         root.addSubview(toolbar)
         root.addSubview(canvas)
-        root.addSubview(actions)
 
         NSLayoutConstraint.activate([
             toolbar.topAnchor.constraint(equalTo: root.topAnchor),
@@ -152,12 +141,7 @@ final class AnnotationEditorController: NSObject, NSWindowDelegate {
             canvas.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
             canvas.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             canvas.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            canvas.bottomAnchor.constraint(equalTo: actions.topAnchor),
-
-            actions.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            actions.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            actions.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            actions.heightAnchor.constraint(equalToConstant: actionsH),
+            canvas.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
         selectTool(.freehand)
